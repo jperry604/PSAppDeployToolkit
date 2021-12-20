@@ -1304,6 +1304,45 @@ Function Exit-Script {
 		Default { $installSuccess = $false }
 	}
 
+	#TODO - Create object then convert to json
+	$HumanReadable = ([ComponentModel.Win32Exception] $exitCode).Message
+    $jsonSummary = @"
+    {
+    "InstallingUser": "$envUserName",
+    "appVendor": "$appVendor",
+    "appName": "$appName",
+    "appVersion": "$appVersion",
+    "appLang": "$appLang",
+    "appRevision": "$appRevision",
+    "appScriptVersion": "$appScriptVersion",
+    "appScriptDate": "$appScriptDate",
+    "appScriptAuthor": "$appScriptAuthor",
+    "exitCode": $exitCode,
+    "HumanReadable": "$HumanReadable",
+    "AllowRebootPassThru": "$AllowRebootPassThru",
+    "appDeployMainScriptVersion": "$appDeployMainScriptVersion"
+    }
+"@
+    $WindowsSource = "AppDeploymentToolkit"
+    $WindowsEventSourceExists = [System.Diagnostics.EventLog]::SourceExists($WindowsSource)
+    If (-not $WindowsEventSourceExists) {
+        If ( $IsAdmin ){
+            Try {
+                New-EventLog –LogName Application –Source $WindowsSource
+                $WindowsEventSourceExists = $True
+                sleep 1
+            } Catch {
+                $WindowsEventSourceExists = $False
+                Write-Log -Message 'Failed to create windows event log source' -Source ${CmdletName} -Severity 3
+            }
+        } Else {
+            Write-Log -Message 'Windows event log source does not exist and requires admin rights to create.' -Source ${CmdletName} -Severity 2
+        }
+
+           
+    }
+    
+	
 	## Determine if balloon notification should be shown
 	If ($deployModeSilent) { [boolean]$configShowBalloonNotifications = $false }
 
@@ -1312,6 +1351,9 @@ Function Exit-Script {
 			Write-Log -Message 'Removing deferral history...' -Source ${CmdletName}
 			Remove-RegistryKey -Key $regKeyDeferHistory -Recurse
 		}
+		if ($WindowsEventSourceExists) {
+            Write-EventLog –LogName Application –Source $WindowsSource –EntryType Warning –EventID 1000 –Message $jsonSummary
+        }
 
 		[string]$balloonText = "$deploymentTypeName $configBalloonTextComplete"
 		## Handle reboot prompts on successful script completion
@@ -1321,13 +1363,18 @@ Function Exit-Script {
 			If (($msiRebootDetected) -and ($exitCode -ne 1641)) { [int32]$exitCode = 3010 }
 		}
 		Else {
-			[int32]$exitCode = 0
+			if ($exitCode -ne 1641) {
+			    [int32]$exitCode = 0
+            }
 		}
 
 		Write-Log -Message "$installName $deploymentTypeName completed with exit code [$exitcode]." -Source ${CmdletName}
 		If ($configShowBalloonNotifications) { Show-BalloonTip -BalloonTipIcon 'Info' -BalloonTipText $balloonText -NoWait }
 	}
 	ElseIf (-not $installSuccess) {
+		if ($WindowsEventSourceExists) {
+            Write-EventLog –LogName Application –Source $WindowsSource –EntryType Error –EventID 1001 –Message $jsonSummary
+        }
 		Write-Log -Message "$installName $deploymentTypeName completed with exit code [$exitcode]." -Source ${CmdletName}
 		If (($exitCode -eq $configInstallationUIExitCode) -or ($exitCode -eq $configInstallationDeferExitCode)) {
 			[string]$balloonText = "$deploymentTypeName $configBalloonTextFastRetry"
